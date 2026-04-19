@@ -1,7 +1,7 @@
 require("dotenv").config();
 const express = require("express");
 const { MongoClient } = require("mongodb");
-const { v7: uuidv7 } = require("uuid");
+const { v4: uuidv4 } = require("uuid");
 
 const app = express();
 app.use(express.json());
@@ -84,7 +84,7 @@ app.post("/api/profiles", async (req, res) => {
     );
 
     const profile = {
-      id: uuidv7(),
+      id: uuidv4(),
       name: name.toLowerCase(),
       gender: genderData.gender,
       gender_probability: genderData.probability,
