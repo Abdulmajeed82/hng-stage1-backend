@@ -1,5 +1,6 @@
+require("dotenv").config();
 const express = require("express");
-const { connectDB, getDB } = require("./db");
+const { MongoClient } = require("mongodb");
 const { v7: uuidv7 } = require("uuid");
 
 const app = express();
@@ -14,6 +15,18 @@ app.use((req, res, next) => {
   next();
 });
 
+// MongoDB connection
+const uri = process.env.MONGODB_URI;
+let db;
+
+async function connectDB() {
+  if (db) return db;
+  const client = new MongoClient(uri);
+  await client.connect();
+  db = client.db("hng_stage1");
+  return db;
+}
+
 // Age group classifier
 function classifyAgeGroup(age) {
   if (age <= 12) return "child";
@@ -24,30 +37,26 @@ function classifyAgeGroup(age) {
 
 // POST /api/profiles
 app.post("/api/profiles", async (req, res) => {
-  const { name } = req.body;
-
-  if (name === undefined || name === "") {
-    return res.status(400).json({ status: "error", message: "name is required" });
-  }
-  if (typeof name !== "string") {
-    return res.status(422).json({ status: "error", message: "name must be a string" });
-  }
-
-  const db = getDB();
-  const collection = db.collection("profiles");
-
-  // Idempotency check
-  const existing = await collection.findOne({ name: name.toLowerCase() });
-  if (existing) {
-    const { _id, ...data } = existing;
-    return res.status(200).json({
-      status: "success",
-      message: "Profile already exists",
-      data,
-    });
-  }
-
   try {
+    const { name } = req.body;
+
+    if (name === undefined || name === "") {
+      return res.status(400).json({ status: "error", message: "name is required" });
+    }
+    if (typeof name !== "string") {
+      return res.status(422).json({ status: "error", message: "name must be a string" });
+    }
+
+    const db = await connectDB();
+    const collection = db.collection("profiles");
+
+    // Idempotency check
+    const existing = await collection.findOne({ name: name.toLowerCase() });
+    if (existing) {
+      const { _id, ...data } = existing;
+      return res.status(200).json({ status: "success", message: "Profile already exists", data });
+    }
+
     const [genderRes, agifyRes, nationalizeRes] = await Promise.all([
       fetch(`https://api.genderize.io?name=${encodeURIComponent(name)}`),
       fetch(`https://api.agify.io?name=${encodeURIComponent(name)}`),
@@ -60,27 +69,16 @@ app.post("/api/profiles", async (req, res) => {
       nationalizeRes.json(),
     ]);
 
-    // Edge case checks
     if (genderData.gender === null || genderData.count === 0) {
-      return res.status(502).json({
-        status: "502",
-        message: "Genderize returned an invalid response",
-      });
+      return res.status(502).json({ status: "502", message: "Genderize returned an invalid response" });
     }
     if (agifyData.age === null) {
-      return res.status(502).json({
-        status: "502",
-        message: "Agify returned an invalid response",
-      });
+      return res.status(502).json({ status: "502", message: "Agify returned an invalid response" });
     }
     if (!nationalizeData.country || nationalizeData.country.length === 0) {
-      return res.status(502).json({
-        status: "502",
-        message: "Nationalize returned an invalid response",
-      });
+      return res.status(502).json({ status: "502", message: "Nationalize returned an invalid response" });
     }
 
-    // Pick highest probability country
     const topCountry = nationalizeData.country.reduce((a, b) =>
       a.probability > b.probability ? a : b
     );
@@ -110,7 +108,7 @@ app.post("/api/profiles", async (req, res) => {
 // GET /api/profiles
 app.get("/api/profiles", async (req, res) => {
   try {
-    const db = getDB();
+    const db = await connectDB();
     const collection = db.collection("profiles");
 
     const query = {};
@@ -120,23 +118,11 @@ app.get("/api/profiles", async (req, res) => {
 
     const profiles = await collection
       .find(query, {
-        projection: {
-          _id: 0,
-          id: 1,
-          name: 1,
-          gender: 1,
-          age: 1,
-          age_group: 1,
-          country_id: 1,
-        },
+        projection: { _id: 0, id: 1, name: 1, gender: 1, age: 1, age_group: 1, country_id: 1 },
       })
       .toArray();
 
-    return res.status(200).json({
-      status: "success",
-      count: profiles.length,
-      data: profiles,
-    });
+    return res.status(200).json({ status: "success", count: profiles.length, data: profiles });
   } catch (err) {
     return res.status(500).json({ status: "error", message: "Internal server error" });
   }
@@ -145,7 +131,7 @@ app.get("/api/profiles", async (req, res) => {
 // GET /api/profiles/:id
 app.get("/api/profiles/:id", async (req, res) => {
   try {
-    const db = getDB();
+    const db = await connectDB();
     const collection = db.collection("profiles");
 
     const profile = await collection.findOne(
@@ -166,7 +152,7 @@ app.get("/api/profiles/:id", async (req, res) => {
 // DELETE /api/profiles/:id
 app.delete("/api/profiles/:id", async (req, res) => {
   try {
-    const db = getDB();
+    const db = await connectDB();
     const collection = db.collection("profiles");
 
     const result = await collection.deleteOne({ id: req.params.id });
@@ -182,9 +168,6 @@ app.delete("/api/profiles/:id", async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-
-connectDB().then(() => {
-  app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-});
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
 module.exports = app;
